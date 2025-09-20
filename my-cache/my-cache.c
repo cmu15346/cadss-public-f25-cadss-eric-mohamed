@@ -138,6 +138,11 @@ void installCacheLine(uint64_t addr, uint64_t setIndex, uint64_t tag) {
     if (victim_cache && evicted_line != 0) {
         uint64_t evicted_tag = (evicted_line << 1) >> 1;
         installVictimLine(0, evicted_tag);
+    } else if (evicted_line != 0) {
+        // If no victim cache, invalidate the evicted line with invlReq
+        uint64_t evicted_tag = (evicted_line << 1) >> 1;
+        uint64_t evicted_addr = (evicted_tag << (main_cache->b + main_cache->s)) | (setIndex << main_cache->b);
+        coherComp->invlReq(evicted_addr, 0);
     }
 }
 
@@ -326,6 +331,11 @@ void coherCallback(int type, int procNum, int64_t addr)
             break;
 
         case DATA_RECV:
+            // Install the cache line when data arrives
+            uint64_t setIndex = (addr >> main_cache->b) & (~((uint64_t)-1 << main_cache->s));
+            uint64_t tag = (addr >> (main_cache->b + main_cache->s));
+            installCacheLine(addr, setIndex, tag);
+
             // Find the matching pending request and move it to ready
             if (pendReq != NULL && pendReq->addr == addr && pendReq->procNum == procNum) {
                 pendingRequest* pr = pendReq;
@@ -437,7 +447,7 @@ void memoryRequest(trace_op* op, int processorNum, int64_t tag,
     if (perm == 1) {
         // Permission granted immediately (higher-level cache hit)
         // Install the cache line and schedule callback
-        installCacheLine(addr, addressSetIndex, addressTag);
+        // installCacheLine(addr, addressSetIndex, addressTag);
         pr->next = readyReq;
         readyReq = pr;
     } else {
@@ -460,11 +470,11 @@ int tick()
         
         // When data arrives from coherence system for pending requests,
         // we need to install the cache line
-        if (pr->addr != 0) {
-            uint64_t setIndex = (pr->addr >> main_cache->b) & (~((uint64_t)-1 << main_cache->s));
-            uint64_t tag = (pr->addr >> (main_cache->b + main_cache->s));
-            installCacheLine(pr->addr, setIndex, tag);
-        }
+        // if (pr->addr != 0) {
+        //     uint64_t setIndex = (pr->addr >> main_cache->b) & (~((uint64_t)-1 << main_cache->s));
+        //     uint64_t tag = (pr->addr >> (main_cache->b + main_cache->s));
+        //     installCacheLine(pr->addr, setIndex, tag);
+        // }
         
         // Call the processor callback
         pr->memCallback(pr->procNum, pr->tag);
