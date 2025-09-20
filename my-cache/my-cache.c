@@ -10,8 +10,10 @@
 
 typedef struct _pendingRequest {
     int64_t tag;
+    int64_t addr;
     int8_t procNum;
     void (*memCallback)(int, int64_t);
+    struct _pendingRequest* next;
 } pendingRequest;
 
 typedef struct cache_def {
@@ -27,14 +29,44 @@ cache_def* main_cache = NULL;
 
 coher* coherComp = NULL;
 
+// Request queues
+pendingRequest* readyReq = NULL;
+pendingRequest* pendReq = NULL;
+
 int processorCount = 1;
 int CADSS_VERBOSE = 1;
-pendingRequest pending = {0};
 int countDown = 0;
 
 void memoryRequest(trace_op* op, int processorNum, int64_t tag,
                    void (*callback)(int, int64_t));
 void coherCallback(int type, int procNum, int64_t addr);
+uint64_t get_max(uint64_t *A, uint64_t E);
+void modify_timestamps(uint64_t *timestamps, uint64_t E, uint64_t lineAccessed);
+
+// Helper function to install a cache line
+void installCacheLine(uint64_t addr, uint64_t setIndex, uint64_t tag) {
+    // Find an empty line or evict LRU
+    uint64_t lineIndex = 0;
+    bool found_empty = false;
+    
+    for(uint64_t i = 0; i < main_cache->E; i++){
+        uint64_t cache_line = main_cache->cache_matrix[setIndex][i];
+        if(!(cache_line >> 63)){  // Invalid line found
+            lineIndex = i;
+            found_empty = true;
+            break;
+        }
+    }
+    
+    if (!found_empty) {
+        // Need to evict LRU
+        lineIndex = get_max(main_cache->timestamps[setIndex], main_cache->E);
+    }
+    
+    // Install the new line
+    main_cache->cache_matrix[setIndex][lineIndex] = (tag | ((uint64_t)0x1 << 63));
+    modify_timestamps(main_cache->timestamps[setIndex], main_cache->E, lineIndex);
+}
 
 /* Checks if the argument passed to the option opt is an integer argument 
    ARGS: 
@@ -183,10 +215,32 @@ void coherCallback(int type, int procNum, int64_t addr)
     switch (type)
     {
         case NO_ACTION:
+            // No action needed
+            break;
+
         case DATA_RECV:
-            // TODO: check that the addr is the pending access
-            // This indicates that the cache has received data from memory
-            countDown = 1;
+            // Find the matching pending request and move it to ready
+            if (pendReq != NULL && pendReq->addr == addr && pendReq->procNum == procNum) {
+                pendingRequest* pr = pendReq;
+                pendReq = pendReq->next;
+                pr->next = readyReq;
+                readyReq = pr;
+            }
+            else if (pendReq != NULL) {
+                // Search through the list for matching request
+                pendingRequest* prev = pendReq;
+                pendingRequest* curr = pendReq->next;
+                while (curr != NULL) {
+                    if (curr->addr == addr && curr->procNum == procNum) {
+                        prev->next = curr->next;
+                        curr->next = readyReq;
+                        readyReq = curr;
+                        break;
+                    }
+                    prev = curr;
+                    curr = curr->next;
+                }
+            }
             break;
 
         case INVALIDATE:
@@ -198,83 +252,65 @@ void coherCallback(int type, int procNum, int64_t addr)
     }  
 }
 
+
 void memoryRequest(trace_op* op, int processorNum, int64_t tag,
                    void (*callback)(int, int64_t))
 {
     assert(op != NULL);
     assert(callback != NULL);
-    // Simple model to only have one outstanding memory operation
-    if (countDown != 0)
-    {
-        assert(pending.memCallback != NULL);
-        pending.memCallback(pending.procNum, pending.tag);
-    }
-
-    pending = (pendingRequest){
-        .tag = tag, .procNum = processorNum, .memCallback = callback};
-
-    uint64_t memoryAddress = op->memAddress;
-
+    
+    // Calculate block-aligned address
+    uint64_t addr = (op->memAddress & ~((1ULL << main_cache->b) - 1));
+    
     // extract the set index from the memory address
-    uint64_t addressSetIndex = (memoryAddress >> main_cache->b) & (~((uint64_t)-1 << main_cache->s));
+    uint64_t addressSetIndex = (addr >> main_cache->b) & (~((uint64_t)-1 << main_cache->s));
     // extract the tag bits from the memory address
-    uint64_t addressTag = (memoryAddress >> (main_cache->b + main_cache->s));
+    uint64_t addressTag = (addr >> (main_cache->b + main_cache->s));
     
     bool found = false;
-    bool eviction = false;
     uint64_t lineIndex = 0;
 
-    // for every line in the set
+    // Check for cache hit
     for(uint64_t i = 0; i < main_cache->E; i++){
-        // get the cache line
         uint64_t cache_line = main_cache->cache_matrix[addressSetIndex][i];
-        // if the valid bit is set to 0
-        if(!(cache_line >> 63)){
-            found = false;
-            eviction = false;
-            lineIndex = i;
-            break;
-        }
         // if the valid bit is set to 1 and the tags match
         if((cache_line >> 63) && (((cache_line << 1) >> 1) == addressTag)){
             found = true;
-            eviction = false;
             lineIndex = i;
             break;
         }
-        // if the valid bit is set to 1 and the tags don't match
-        if((cache_line >> 63) && (((cache_line << 1) >> 1) != addressTag)){
-            found = false;
-            eviction = true;
-            lineIndex = i;
-            continue;
-        }
     }
 
-    // variable to keep track of the index to modify (lineIndex by default)
-    uint64_t indexToModify = lineIndex;
+    // Create pending request
+    pendingRequest* pr = malloc(sizeof(pendingRequest));
+    pr->tag = tag;
+    pr->addr = addr;
+    pr->memCallback = callback;
+    pr->procNum = processorNum;
+    pr->next = NULL;
+
     if(found){
-        // printf("Cache hit for memory address with tag %ld\n", tag);
-        callback(processorNum, tag);
-    }
-    else if(!found && !eviction){
-        main_cache->cache_matrix[addressSetIndex][lineIndex] = (addressTag | ((uint64_t)0x1 << 63));
-    }
-    else if(!found && eviction){
-        // the maxIndex would correspond to the LRU line
-        uint64_t maxIndex = get_max(main_cache->timestamps[addressSetIndex], main_cache->E);
-        indexToModify = maxIndex; 
-        main_cache->cache_matrix[addressSetIndex][maxIndex] = (((uint64_t)0x1 << 63) | addressTag);
+        // Cache hit - update LRU and schedule callback for next tick
+        modify_timestamps(main_cache->timestamps[addressSetIndex], main_cache->E, lineIndex);
+        pr->next = readyReq;
+        readyReq = pr;
+        return;
     }
 
-    modify_timestamps(main_cache->timestamps[addressSetIndex], main_cache->E, indexToModify);
-
-    // In a real cache simulator, the delay is based
-    // on whether the request is a hit or miss.
-    countDown = 2;
-
-    // Tell memory about this request
-    coherComp->permReq(false, op->memAddress, processorNum);
+    // Cache miss - request permission from coherence system
+    uint8_t perm = coherComp->permReq((op->op == MEM_LOAD), addr, processorNum);
+    
+    if (perm == 1) {
+        // Permission granted immediately (higher-level cache hit)
+        // Install the cache line and schedule callback
+        installCacheLine(addr, addressSetIndex, addressTag);
+        pr->next = readyReq;
+        readyReq = pr;
+    } else {
+        // Permission denied - need to wait for data from memory
+        pr->next = pendReq;
+        pendReq = pr;
+    }
 }
 
 int tick()
@@ -282,11 +318,26 @@ int tick()
     // Advance ticks in the coherence component.
     coherComp->si.tick();
     
-    if (countDown == 1)
+    // Process all ready requests
+    pendingRequest* pr = readyReq;
+    while (pr != NULL)
     {
-        assert(pending.memCallback != NULL);
-        pending.memCallback(pending.procNum, pending.tag);
+        pendingRequest* next = pr->next;
+        
+        // When data arrives from coherence system for pending requests,
+        // we need to install the cache line
+        if (pr->addr != 0) {
+            uint64_t setIndex = (pr->addr >> main_cache->b) & (~((uint64_t)-1 << main_cache->s));
+            uint64_t tag = (pr->addr >> (main_cache->b + main_cache->s));
+            installCacheLine(pr->addr, setIndex, tag);
+        }
+        
+        // Call the processor callback
+        pr->memCallback(pr->procNum, pr->tag);
+        free(pr);
+        pr = next;
     }
+    readyReq = NULL;
 
     return 1;
 }
