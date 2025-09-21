@@ -1,0 +1,164 @@
+CACHE EXPERIMENT ANALYSIS REPORT
+==================================================
+
+Total configurations tested: 220
+Total traces analyzed: 12
+Total successful simulations: 2640
+
+OVERALL STATISTICS
+--------------------
+Mean AAT across all configs/traces: 31.5261 cycles per access
+Best AAT found: 1.0143 cycles per access
+Worst AAT found: 121.7895 cycles per access
+Standard deviation: 33.0560
+Performance improvement potential: 99.2%
+
+RECOMMENDED UNIVERSAL CONFIGURATION
+-----------------------------------
+Configuration ID: 17
+Cache Type: RRIP+Victim
+Set bits (s): 11
+Associativity (E): 1
+Block bits (b): 4
+RRIP bits (r): 4
+Victim entries (i): 32
+Total size: 46856 bytes (45.8 KB)
+Mean AAT: 19.6837 cycles per access
+AAT Std Dev: 22.0603
+
+CONFIGURATION TYPE ANALYSIS
+----------------------------
+
+LRU:
+  Configurations tested: 660.0
+  Mean AAT: 36.8369 cycles per access
+  Best AAT: 1.9786 cycles per access
+  AAT Std Dev: 35.5278
+  Average Size: 22.1 KB
+
+LRU+Victim:
+  Configurations tested: 660.0
+  Mean AAT: 26.8710 cycles per access
+  Best AAT: 1.0143 cycles per access
+  AAT Std Dev: 29.1275
+  Average Size: 37.2 KB
+
+RRIP:
+  Configurations tested: 660.0
+  Mean AAT: 37.8859 cycles per access
+  Best AAT: 2.2280 cycles per access
+  AAT Std Dev: 37.2355
+  Average Size: 30.2 KB
+
+RRIP+Victim:
+  Configurations tested: 660.0
+  Mean AAT: 24.5106 cycles per access
+  Best AAT: 1.0143 cycles per access
+  AAT Std Dev: 27.1826
+  Average Size: 44.7 KB
+BEST CONFIGURATION PER TRACE
+------------------------------
+
+Trace: astar
+  Best Config ID: 92
+  Best AAT: 2.6665 cycles per access
+  Total Ticks: 1337177
+  Total Accesses: 501468
+  Configuration: RRIP+Victim s=10 E=1 b=5 r=4 i=32
+  Size: 39940 bytes (39.0 KB)
+
+Trace: bzip2
+  Best Config ID: 92
+  Best AAT: 1.0143 cycles per access
+  Total Ticks: 552313
+  Total Accesses: 544514
+  Configuration: RRIP+Victim s=10 E=1 b=5 r=4 i=32
+  Size: 39940 bytes (39.0 KB)
+
+Trace: dave
+  Best Config ID: 17
+  Best AAT: 21.0000 cycles per access
+  Total Ticks: 105
+  Total Accesses: 5
+  Configuration: RRIP+Victim s=11 E=1 b=4 r=4 i=32
+  Size: 46856 bytes (45.8 KB)
+
+Trace: load
+  Best Config ID: 4
+  Best AAT: 12.1111 cycles per access
+  Total Ticks: 109
+  Total Accesses: 9
+  Configuration: RRIP+Victim s=10 E=2 b=4 r=4 i=32
+  Size: 47112 bytes (46.0 KB)
+
+Trace: long
+  Best Config ID: 17
+  Best AAT: 2.1887 cycles per access
+  Total Ticks: 628086
+  Total Accesses: 286966
+  Configuration: RRIP+Victim s=11 E=1 b=4 r=4 i=32
+  Size: 46856 bytes (45.8 KB)
+
+Trace: mcf
+  Best Config ID: 92
+  Best AAT: 3.2234 cycles per access
+  Total Ticks: 1636537
+  Total Accesses: 507700
+  Configuration: RRIP+Victim s=10 E=1 b=5 r=4 i=32
+  Size: 39940 bytes (39.0 KB)
+
+Trace: perlbench
+  Best Config ID: 92
+  Best AAT: 3.0155 cycles per access
+  Total Ticks: 1530207
+  Total Accesses: 507441
+  Configuration: RRIP+Victim s=10 E=1 b=5 r=4 i=32
+  Size: 39940 bytes (39.0 KB)
+
+Trace: test
+  Best Config ID: 1
+  Best AAT: 51.0000 cycles per access
+  Total Ticks: 102
+  Total Accesses: 2
+  Configuration: LRU s=6 E=32 b=4 r=0 i=0
+  Size: 48128 bytes (47.0 KB)
+
+Trace: trans
+  Best Config ID: 144
+  Best AAT: 2.2605 cycles per access
+  Total Ticks: 538
+  Total Accesses: 238
+  Configuration: LRU s=6 E=2 b=8 r=0 i=0
+  Size: 33600 bytes (32.8 KB)
+
+Trace: wide
+  Best Config ID: 4
+  Best AAT: 68.8947 cycles per access
+  Total Ticks: 1309
+  Total Accesses: 19
+  Configuration: RRIP+Victim s=10 E=2 b=4 r=4 i=32
+  Size: 47112 bytes (46.0 KB)
+
+Trace: yi
+  Best Config ID: 92
+  Best AAT: 23.1111 cycles per access
+  Total Ticks: 208
+  Total Accesses: 9
+  Configuration: RRIP+Victim s=10 E=1 b=5 r=4 i=32
+  Size: 39940 bytes (39.0 KB)
+
+Trace: yi2
+  Best Config ID: 1
+  Best AAT: 6.8824 cycles per access
+  Total Ticks: 117
+  Total Accesses: 17
+  Configuration: LRU s=6 E=32 b=4 r=0 i=0
+  Size: 48128 bytes (47.0 KB)
+
+
+SIZE UTILIZATION ANALYSIS
+-------------------------
+Budget: 54 KB (55296 bytes)
+Largest config tested: 48128 bytes (47.0 KB)
+Average config size: 34338 bytes (33.5 KB)
+Budget utilization: 87.0%
