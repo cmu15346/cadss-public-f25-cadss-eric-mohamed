@@ -23,6 +23,7 @@ typedef struct cache_def {
     uint64_t b; // the number of block bits
     uint64_t r; // the number of RRIP bits
     uint64_t **timestamps_or_rrip_values; // timestamps for LRU (if r = 0) or RRIP values (if r > 0)
+    uint64_t **cache_addresses; // a matrix of memory addresses in the cache 
     uint64_t **cache_matrix; // a matrix of valid bits and tags
 
     // victim cache 
@@ -82,6 +83,7 @@ void installVictimLine(uint64_t addr, uint64_t tag) {
         }
     }
 
+    
     // need to evict LRU line
     if (!found_empty) {
         lineIndex = get_max(main_cache->victim_timestamps, main_cache->i);
@@ -95,7 +97,7 @@ void installVictimLine(uint64_t addr, uint64_t tag) {
 
 
 // Helper function to install a cache line
-void installCacheLine(uint64_t addr, uint64_t setIndex, uint64_t tag) {
+void installCacheLine(uint64_t addr, uint64_t setIndex, uint64_t tag, void (*callback)(int, int64_t)) {
     // Find an empty line or evict LRU or RRIP line
     uint64_t lineIndex = 0;
     uint64_t evicted_line = 0;
@@ -122,16 +124,38 @@ void installCacheLine(uint64_t addr, uint64_t setIndex, uint64_t tag) {
         evicted_line = main_cache->cache_matrix[setIndex][lineIndex];
     }
     
+    // Store the address of the installed line
+    main_cache->cache_addresses[setIndex][lineIndex] = addr;
+    // Update timestamps for LRU
+    main_cache->cache_matrix[setIndex][lineIndex] = (tag | ((uint64_t)0x1 << 63));
+
+    // Create pending request
+    pendingRequest* pr = malloc(sizeof(pendingRequest));
+    pr->tag = tag;
+    pr->addr = addr;
+    pr->memCallback = callback;
+    pr->procNum = 0;
+    pr->next = NULL;
+
+    uint8_t perm = coherComp->invlReq(main_cache->cache_addresses[setIndex][lineIndex], 0);
+    
+    if (perm == 1) {
+        // Permission granted immediately (higher-level cache hit)
+        // Install the cache line and schedule callback
+        pr->next = readyReq;
+        readyReq = pr;
+    } else {
+        // Permission denied - need to wait for data from memory
+        pr->next = pendReq;
+        pendReq = pr;
+    }
+
     // Install the new line
     if(rrip) {
-        // Set valid bit to 1 and store the tag
-        main_cache->cache_matrix[setIndex][lineIndex] = (tag | ((uint64_t)0x1 << 63));
         // Set RRIP value to 2^r - 2 on insertion
         main_cache->timestamps_or_rrip_values[setIndex][lineIndex] = (1 << main_cache->r) - 2;
     } 
     else {
-        // Update timestamps for LRU
-        main_cache->cache_matrix[setIndex][lineIndex] = (tag | ((uint64_t)0x1 << 63));
         modify_timestamps(main_cache->timestamps_or_rrip_values[setIndex], main_cache->E, lineIndex);
     }
 
@@ -192,7 +216,8 @@ void init_main_cache(uint64_t s, uint64_t E, uint64_t b, uint64_t i, uint64_t r)
     // initialize the matrix of tags (we do 1 << c->s because the number of
     // sets is 2^s)
     main_cache->cache_matrix = (uint64_t**)xcalloc((uint64_t)1 << main_cache->s, sizeof(uint64_t*));
-    
+    main_cache->cache_addresses = (uint64_t**)xcalloc((uint64_t)1 << main_cache->s, sizeof(uint64_t*));
+
     // initialize the victim cache if needed
     if(victim_cache){
         main_cache->victim_cache = (uint64_t*)xcalloc(main_cache->i, sizeof(uint64_t));
@@ -203,6 +228,7 @@ void init_main_cache(uint64_t s, uint64_t E, uint64_t b, uint64_t i, uint64_t r)
     for(int i = 0; i < ((uint64_t)1 << main_cache->s); i++){
         main_cache->timestamps_or_rrip_values[i] = xcalloc(main_cache->E, sizeof(uint64_t));
         main_cache->cache_matrix[i] = xcalloc(main_cache->E, sizeof(uint64_t));
+        main_cache->cache_addresses[i] = xcalloc(main_cache->E, sizeof(uint64_t));
     }
 }
 
@@ -424,7 +450,7 @@ void memoryRequest(trace_op* op, int processorNum, int64_t tag,
         main_cache->victim_cache[victim_index] = 0;
 
         // Bring line into main cache
-        installCacheLine(addr, addressSetIndex, addressTag);
+        installCacheLine(addr, addressSetIndex, addressTag, callback);
 
         pr->next = readyReq;
         readyReq = pr;
@@ -437,7 +463,7 @@ void memoryRequest(trace_op* op, int processorNum, int64_t tag,
     if (perm == 1) {
         // Permission granted immediately (higher-level cache hit)
         // Install the cache line and schedule callback
-        installCacheLine(addr, addressSetIndex, addressTag);
+        installCacheLine(addr, addressSetIndex, addressTag, callback);
         pr->next = readyReq;
         readyReq = pr;
     } else {
@@ -463,7 +489,7 @@ int tick()
         if (pr->addr != 0) {
             uint64_t setIndex = (pr->addr >> main_cache->b) & (~((uint64_t)-1 << main_cache->s));
             uint64_t tag = (pr->addr >> (main_cache->b + main_cache->s));
-            installCacheLine(pr->addr, setIndex, tag);
+            installCacheLine(pr->addr, setIndex, tag, NULL);
         }
         
         // Call the processor callback
