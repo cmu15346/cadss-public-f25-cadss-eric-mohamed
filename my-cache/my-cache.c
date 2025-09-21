@@ -1,5 +1,6 @@
 #include <cache.h>
 #include <stdio.h>
+#include <sys/types.h>
 #include <trace.h>
 #include <stdint.h>
 
@@ -24,6 +25,11 @@ typedef struct cache_def {
     uint64_t **timestamps_or_rrip_values; // timestamps for LRU (if r = 0) or RRIP values (if r > 0)
     uint64_t **cache_addresses; // a matrix of memory addresses in the cache 
     uint64_t **cache_matrix; // a matrix of valid bits and tags
+
+    // victim cache 
+    uint64_t i; // the number of entries in the victim cache
+    uint64_t *victim_cache; // valid bits and tags for victim cache
+    uint64_t *victim_timestamps; // timestamps for victim cache
 } cache_def;
 
 cache* self = NULL;
@@ -34,6 +40,11 @@ coher* coherComp = NULL;
 // Request queues
 pendingRequest* readyReq = NULL;
 pendingRequest* pendReq = NULL;
+
+// true if using RRIP, false if using LRU
+bool rrip = false;
+// true if using victim cache, false otherwise
+bool victim_cache = false;
 
 int processorCount = 1;
 int CADSS_VERBOSE = 1;
@@ -89,6 +100,7 @@ void installVictimLine(uint64_t addr, uint64_t tag) {
 void installCacheLine(uint64_t addr, uint64_t setIndex, uint64_t tag, void (*callback)(int, int64_t)) {
     // Find an empty line or evict LRU or RRIP line
     uint64_t lineIndex = 0;
+    uint64_t evicted_line = 0;
     bool found_empty = false;
     
     for(uint64_t i = 0; i < main_cache->E; i++){
@@ -186,15 +198,20 @@ uint64_t atoi_safe(int opt, char *string){
     ARGS: 
     s: the number of set index bits
     E: the number of lines per set
+    b: the number of block bits
+    r: the number of RRIP bits
     RETURNS: an object of type cache */
-void init_main_cache(uint64_t s, uint64_t E, uint64_t b){
+void init_main_cache(uint64_t s, uint64_t E, uint64_t b, uint64_t i, uint64_t r){
     main_cache = (cache_def*)xcalloc(1, sizeof(cache_def));
     main_cache->s = (uint64_t)s;
     main_cache->E = (uint64_t)E;
     main_cache->b = (uint64_t)b;
+    main_cache->i = (uint64_t)i;
+    main_cache->r = (uint64_t)r;
+
     // initialize a 2d array with rows = number of sets and columns = number of 
     // lines that stores the timestamp of each line
-    main_cache->timestamps = (uint64_t**)xcalloc((uint64_t)1 << main_cache->s, sizeof(uint64_t*));
+    main_cache->timestamps_or_rrip_values = (uint64_t**)xcalloc((uint64_t)1 << main_cache->s, sizeof(uint64_t*));
     
     // initialize the matrix of tags (we do 1 << c->s because the number of
     // sets is 2^s)
@@ -209,7 +226,7 @@ void init_main_cache(uint64_t s, uint64_t E, uint64_t b){
 
     // initialize each row of the tag matrix and timestamp matrix
     for(int i = 0; i < ((uint64_t)1 << main_cache->s); i++){
-        main_cache->timestamps[i] = xcalloc(main_cache->E, sizeof(uint64_t));
+        main_cache->timestamps_or_rrip_values[i] = xcalloc(main_cache->E, sizeof(uint64_t));
         main_cache->cache_matrix[i] = xcalloc(main_cache->E, sizeof(uint64_t));
         main_cache->cache_addresses[i] = xcalloc(main_cache->E, sizeof(uint64_t));
     }
@@ -221,13 +238,13 @@ void init_main_cache(uint64_t s, uint64_t E, uint64_t b){
       E: the number of lines
       lineAccessed: the index of the line we accessed
    RETURNS: N/A */
-void modify_timestamps(uint64_t *timestamps, uint64_t E, uint64_t lineAccessed){
-    timestamps[lineAccessed] = 0;
+void modify_timestamps(uint64_t *timestamps_or_rrip_values, uint64_t E, uint64_t lineAccessed){
+    timestamps_or_rrip_values[lineAccessed] = 0;
     for (uint64_t i = 0; i < lineAccessed; i++){
-        timestamps[i] = timestamps[i] + 1;
+        timestamps_or_rrip_values[i] = timestamps_or_rrip_values[i] + 1;
     }
     for (uint64_t i = lineAccessed + 1; i < E; i++){
-        timestamps[i] = timestamps[i] + 1;
+        timestamps_or_rrip_values[i] = timestamps_or_rrip_values[i] + 1;
     }
 }
 
@@ -249,10 +266,29 @@ uint64_t get_max(uint64_t *A, uint64_t E){
     return indexMax;
 }
 
+/* get the index of the line to evict using RRIP
+   ARGS: 
+      rrip_values: the array of RRIP values
+      E: the length of rrip_values
+   RETURNS: the index of the line to evict */
+uint64_t get_max_rrip(uint64_t *rrip_values, uint64_t E){
+    uint64_t max_rrip = (1 << main_cache->r) - 1;
+    while (true) {
+        // Look for a line with RRIP value equal to max_rrip
+        for (uint64_t i = 0; i < E; i++)
+            if (rrip_values[i] == max_rrip) return i;
+        // If none found, increment all RRIP values 
+        for (uint64_t i = 0; i < E; i++) 
+            // redundant?
+            if (rrip_values[i] < max_rrip)
+                rrip_values[i]++;
+    }
+}
+
 cache* init(cache_sim_args* csa)
 {
     int op;
-    uint64_t E = 0, s = 0, b = 0; // number of set index bits
+    uint64_t E = 0, s = 0, b = 0, r = 0, i = 0;
     while ((op = getopt(csa->arg_count, csa->arg_list, "E:s:b:i:R:")) != -1)
     {
         switch (op)
@@ -278,17 +314,21 @@ cache* init(cache_sim_args* csa)
                 break;
             }
 
-            // entries in victim cache (to implement later)
+            // entries in victim cache
             case 'i':
+                victim_cache = true;
+                i = atoi_safe(op, optarg);
                 break;
 
-            // bits in a RRIP-based replacement policy (to implement later)
+            // bits in a RRIP-based replacement policy 
             case 'R':
+                rrip = true;
+                r = atoi_safe(op, optarg);
                 break;
         }
     }
 
-    init_main_cache(s, E, b);
+    init_main_cache(s, E, b, i, r);
 
     self = malloc(sizeof(cache));
     self->memoryRequest = memoryRequest;
@@ -352,7 +392,7 @@ void memoryRequest(trace_op* op, int processorNum, int64_t tag,
     assert(op != NULL);
     assert(callback != NULL);
     
-    // Calculate block-aligned address
+    // Calculate block-aligned address by clearing the block offset bits
     uint64_t addr = (op->memAddress & ~((1ULL << main_cache->b) - 1));
     
     // extract the set index from the memory address
@@ -360,17 +400,26 @@ void memoryRequest(trace_op* op, int processorNum, int64_t tag,
     // extract the tag bits from the memory address
     uint64_t addressTag = (addr >> (main_cache->b + main_cache->s));
     
-    bool found = false;
+    int hit_source = 0; // 0 = miss, 1 = main cache hit, 2 = victim cache hit
     uint64_t lineIndex = 0;
 
-    // Check for cache hit
+    // Check for main cache hit
     for(uint64_t i = 0; i < main_cache->E; i++){
         uint64_t cache_line = main_cache->cache_matrix[addressSetIndex][i];
         // if the valid bit is set to 1 and the tags match
         if((cache_line >> 63) && (((cache_line << 1) >> 1) == addressTag)){
-            found = true;
+            hit_source = 1;
             lineIndex = i;
             break;
+        }
+    }
+
+    // Check for hit in victim cache, if not found in main cache
+    int64_t victim_index = -1;
+    if (!hit_source && victim_cache) {
+        victim_index = lookupVictim(addressTag);
+        if (victim_index != -1) {
+            hit_source = 2;
         }
     }
 
