@@ -76,11 +76,11 @@ def generate_configurations(max_size_bytes=54 * 1024):
     configurations = []
     
     # Parameter ranges to explore
-    s_range = range(6, 17)  # 64 to 64K sets
-    E_range = [2**i for i in range(0, 8)]  # Associativity (1-128)
-    b_range = range(4, 9)   # 16B to 256B blocks
-    r_range = range(2, 5)   # RRIP bits
-    i_range = range(0, 33, 4)  # Victim cache entries
+    s_range = range(6, 18)  # 64 to 256K sets
+    E_range = range(1, 33)  # 1- to 32-way associative
+    b_range = range(4, 11)   # 16B to 1024B blocks (limit specified by handout)
+    r_range = range(2, 7)   # 2-6 RRIP bits
+    i_range = range(0, 9)  # 0-8 victim cache entries (limit specified by handout)
 
     # Generate all combinations
     for s, E, b in itertools.product(s_range, E_range, b_range):
@@ -125,6 +125,8 @@ def generate_configurations(max_size_bytes=54 * 1024):
                         'size': size
                     })
     
+    print(f"Generated {len(configurations)} configurations before sampling")
+
     # Sample an equal number of configs of each type
     type_counts = {}
     for config in configurations:
@@ -269,14 +271,14 @@ def main():
         return
     
     # Get list of trace files
-    trace_dir = Path("traces/cache")
+    trace_dir = Path("traces/afs-cache")
     if not trace_dir.exists():
-        print("Error: traces/cache directory not found")
+        print("Error: traces/afs-cache directory not found")
         return
     
     trace_files = list(trace_dir.glob("*.trace"))
     if not trace_files:
-        print("Error: No trace files found in traces/cache/")
+        print("Error: No trace files found in traces/afs-cache/")
         return
     
     print(f"Found {len(trace_files)} trace files")
