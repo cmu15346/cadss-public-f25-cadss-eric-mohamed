@@ -9,3 +9,10 @@ initialization of simple components.
 Reference implentations are available upon request.
 
 Other support code and files can be found at https://github.com/bprail/cadss_support.
+
+======================================================================================
+
+Submission Notes for P1 (Added by Eric and Mohammed): 
+- All of the new cache logic (basic cache with LRU, RRIP, victim cache) is under /my-cache/my-cache.c
+- The writeup pdf is under /writeup_P1/writeup_P1.pdf
+- All scripts used to run experiments as well as experiment results are under /experiments_P1
