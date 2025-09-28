@@ -40,7 +40,7 @@ int destroy(void);
    RETURNS: atoi(string) if string is a valid integer */
 uint64_t atoi_safe(int opt, char *string){
     int result = atoi(string);
-    if (result == 0){
+    if (result == 0 && string[0] != '0'){
         fprintf(stderr, "Option -%c requires an integer argument.\n", opt);
         exit(0);
     }
