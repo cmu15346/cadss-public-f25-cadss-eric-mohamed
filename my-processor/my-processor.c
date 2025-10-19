@@ -343,8 +343,8 @@ processor* init(processor_sim_args* psa)
 }
 
 const int64_t STALL_TIME = 100000;
-int64_t tickCount = 0;
-int64_t stallCount = -1;
+long tickCount = 0;
+long stallCount = -1;
 
 int64_t makeTag(int procNum, int64_t baseTag)
 {
@@ -363,6 +363,7 @@ void memOpCallback(int procNum, int64_t tag)
 
 int tick(void)
 {
+    printf("tick %ld\n", tickCount);
     trace_op* nextOp = NULL;
 
     bs->si.tick();
