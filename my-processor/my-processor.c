@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <limits.h>
 #include "stdbool.h"
 
 #include "processor.h"
@@ -78,18 +80,25 @@ typedef struct {
     dispatch_queue_t dq; // Dispatch queue
 
     rs_entry_t *rs_fast; // Reservation stations array for fast ALU FU (size = m*j)
-    rs_entry_t *rs_long; // Reservation stations array for long ALU 1 FU (size = m*k)
+    rs_entry_t *rs_long; // Reservation stations array for long ALU FU (size = m*k)
 
     func_unit_t *fu_fast; // Number of fast ALU FUs
     func_unit_t *fu_long; // Number of long ALU FUs
     cdb_t *cdbs; // Common Data Buses
 
     int64_t tag_counter; // Counter to generate unique instruction tags
+
+    int64_t comp_tags[128]; // Completed instruction tags this cycle
+    int comp_dests[128]; // Destination registers for completed instructions
+    int comp_count; // Number of completed instructions this cycle
 } processor_t;
 
 processor_t *p = NULL;
 
-// Dispatch queue operations
+int64_t makeTag(int procNum, int64_t baseTag);
+void memOpCallback(int procNum, int64_t tag);
+
+// Push an instruction to the dispatch queue
 static bool dq_push(dispatch_queue_t *dq, const trace_op *op) {
     // Check for full queue
     if (dq->count >= dq->capacity)
@@ -118,10 +127,9 @@ static void dq_pop(dispatch_queue_t *dq) {
 static inline int rs_cap_fast(void){ return p->schedule_mult * p->num_fast_alu; }
 static inline int rs_cap_long(void){ return p->schedule_mult * p->num_long_alu; }
 
-// Broadcast result on CDBs
+// Broadcast a completed instruction on the CDBs
 static void broadcast(int64_t tag, int dest_reg) {
     // Loop over all fast ALU RS entries and update the ready status of all source operands
-    // waiting for the instruction with the given tag to complete
     for (int i = 0; i < rs_cap_fast(); i++) {
         rs_entry_t *r = &p->rs_fast[i];
         if (r->busy) {
@@ -130,8 +138,7 @@ static void broadcast(int64_t tag, int dest_reg) {
         }
     }
 
-    // Loop over all long ALU RS entries and update the ready status of all source operands
-    // waiting for the instruction with the given tag to complete
+    // Loop over all long ALU RS entries
     for (int i = 0; i < rs_cap_long(); i++) {
         rs_entry_t *r = &p->rs_long[i];
         if (r->busy) {
@@ -143,27 +150,19 @@ static void broadcast(int64_t tag, int dest_reg) {
     // Update the register file if the destination register matches
     if (dest_reg >= 0 && dest_reg < MAX_REGS && p->regs[dest_reg].tag == tag)
         p->regs[dest_reg].ready = true;
-
-    // Mark RS entry as free (instruction completes)
-    for (int i = 0; i < rs_cap_fast(); i++) {
-        if (p->rs_fast[i].busy && p->rs_fast[i].tag == tag)
-            p->rs_fast[i].busy = false;
-    }
-    for (int i = 0; i < rs_cap_long(); i++) {
-        if (p->rs_long[i].busy && p->rs_long[i].tag == tag)
-            p->rs_long[i].busy = false;
-    }
 }
 
 // Dispatch an instruction to the appropriate reservation station
 static bool dispatch_to_rs(const trace_op *op) {
     // Determine which RS to use based on operation type
     rs_entry_t *rs = (op->op == ALU_LONG) ? p->rs_long : p->rs_fast;
-    // Get the capacity of the chosen RS
+
+    // Get RS capacity based on operation type
     int cap = (op->op == ALU_LONG) ? rs_cap_long() : rs_cap_fast();
 
-    // Find an empty RS entry and fill it with the instruction
+    // Loop over RS entries to find a free one
     for (int i = 0; i < cap; i++) {
+        // If entry is free, fill it
         if (!rs[i].busy) {
             rs_entry_t *r = &rs[i];
             r->busy = true;
@@ -172,10 +171,9 @@ static bool dispatch_to_rs(const trace_op *op) {
             r->src1_ready = r->src2_ready = true;
             r->tag = p->tag_counter++;
 
-            // Check source registers for readiness
             int s0 = op->src_reg[0], s1 = op->src_reg[1];
 
-            // If source registers are not ready, set the tags accordingly
+            // Check source registers for readiness and set tags if not ready
             if (s0 >= 0 && s0 < MAX_REGS && !p->regs[s0].ready) {
                 r->src1_ready = false; r->tag1 = p->regs[s0].tag;
             }
@@ -194,117 +192,139 @@ static bool dispatch_to_rs(const trace_op *op) {
     return false;
 }
 
-// Issue ready instructions to functional units 
-static int issue_ready(void) {
-    int did = 0; // track progress
-
-    // Issue ready instructions from fast ALU RS to fast ALU FUs (in tag order)
+// Issue ready instructions from RS to FUs
+static void issue_ready(void) {
+    // Issue ready instructions to fast ALU FUs
     for (int j = 0; j < p->num_fast_alu; j++) {
         func_unit_t *fu = &p->fu_fast[j];
-        if (fu->busy) continue; // FU is busy
+        if (fu->busy) continue;
 
-        // Find the ready RS entry with the lowest tag
+        // Get the ready instruction with the smallest tag
         int index = -1;
         int64_t min_tag = INT64_MAX;
         for (int i = 0; i < rs_cap_fast(); i++) {
             rs_entry_t *r = &p->rs_fast[i];
-            if (r->busy && r->src1_ready && r->src2_ready && r->tag < min_tag){ 
-                min_tag = r->tag; 
-                index = i; 
+            if (r->busy && r->src1_ready && r->src2_ready && r->tag < min_tag) {
+                min_tag = r->tag;
+                index = i;
             }
         }
 
-        // If found, issue to FU
+        // If found, issue it to the fast ALU FU
         if (index != -1) {
             rs_entry_t *r = &p->rs_fast[index];
             fu->busy = true;
-            fu->remaining = 1; // fast ALU latency = 1
+            fu->remaining = 1;
             fu->tag = r->tag;
             fu->dest_reg = r->dest_reg;
-            did = 1;
+            r->busy = false;
         }
     }
 
-    // Issue ready instructions from long ALU RS to long ALU FUs (tag order)
+    // Issue ready instructions to long ALU FUs
     for (int j = 0; j < p->num_long_alu; j++) {
         func_unit_t *fu = &p->fu_long[j];
         if (fu->busy) continue;
 
-        // Find the ready RS entry with the lowest tag
+        // Get the ready instruction with the smallest tag
         int index = -1;
         int64_t min_tag = INT64_MAX;
         for (int i = 0; i < rs_cap_long(); i++) {
             rs_entry_t *r = &p->rs_long[i];
-            if (r->busy && r->src1_ready && r->src2_ready && r->tag < min_tag) { 
-                min_tag = r->tag; 
-                index = i; 
+            if (r->busy && r->src1_ready && r->src2_ready && r->tag < min_tag) {
+                min_tag = r->tag;
+                index = i;
             }
         }
 
-        // If found, issue to FU
+        // If found, issue it to the long ALU FU
         if (index != -1) {
             rs_entry_t *r = &p->rs_long[index];
             fu->busy = true;
-            fu->remaining = 3; // long ALU latency = 3
+            fu->remaining = 3;
             fu->tag = r->tag;
             fu->dest_reg = r->dest_reg;
-            did = 1;
+            r->busy = false;
         }
     }
-    return did;
 }
 
-// Execute instructions in functional units and broadcast results when done
-static void execute(void) {
-    // To collect completed instructions
-    int64_t tags[64]; 
-    int dests[64];
-    int count = 0;
+// Fetch stage: dispatch instructions from the dispatch queue to reservation stations
+static void stage_dispatch(void) {
+    // Dispatch up to max_dispatch instructions from the dispatch queue
+    int max_dispatch = p->dispatch_mult *
+        (p->schedule_mult * (p->num_fast_alu + p->num_long_alu));
 
-    // Advance all FUs and collect completed ones
+    while (max_dispatch-- > 0) {
+        trace_op *front = dq_front(&p->dq);
+        if (!front) break;
+
+        // Only dispatch ALU and ALU_LONG instructions
+        if (front->op != ALU && front->op != ALU_LONG) {
+            dq_pop(&p->dq);
+            continue;
+        }
+
+        bool ok = dispatch_to_rs(front);
+        if (!ok) break;
+        dq_pop(&p->dq);
+    }
+}
+
+// Schedule stage: issue ready instructions in the reservation stations to functional units
+static void stage_schedule(void) { issue_ready(); }
+
+// Execute stage: advance functional units and collect completed instructions
+static void stage_execute(void) {
+    // Advance fast ALU FUs
     for (int i = 0; i < p->num_fast_alu; i++) {
         func_unit_t *fu = &p->fu_fast[i];
         if (!fu->busy) continue;
         if (fu->remaining > 0) fu->remaining--;
         if (fu->remaining == 0) {
-            tags[count] = fu->tag;
-            dests[count++] = fu->dest_reg;
+            p->comp_tags[p->comp_count] = fu->tag;
+            p->comp_dests[p->comp_count++] = fu->dest_reg;
             fu->busy = false;
         }
     }
+
+    // Advance long ALU FUs
     for (int i = 0; i < p->num_long_alu; i++) {
         func_unit_t *fu = &p->fu_long[i];
         if (!fu->busy) continue;
         if (fu->remaining > 0) fu->remaining--;
         if (fu->remaining == 0) {
-            tags[count] = fu->tag;
-            dests[count++] = fu->dest_reg;
+            p->comp_tags[p->comp_count] = fu->tag;
+            p->comp_dests[p->comp_count++] = fu->dest_reg;
             fu->busy = false;
         }
     }
+}
 
-    // No completed instructions
-    if (count == 0) return;
+// Update stage state: broadcast completed instructions on CDBs
+static void stage_state_update(void) {
+    if (p->comp_count == 0) return;
 
-    // Sort completed instructions by tag (selection sort)
-    for (int a = 0; a < count - 1; a++) {
+    // Sort completed instructions by tag to broadcast in order
+    for (int a = 0; a < p->comp_count - 1; a++) {
         int min = a;
-        for (int b = a + 1; b < count; b++)
-            if (tags[b] < tags[min]) min = b;
+        for (int b = a + 1; b < p->comp_count; b++)
+            if (p->comp_tags[b] < p->comp_tags[min]) min = b;
         if (min != a) {
-            int64_t t = tags[a]; tags[a] = tags[min]; tags[min] = t;
-            int d = dests[a]; dests[a] = dests[min]; dests[min] = d;
+            int64_t t = p->comp_tags[a]; p->comp_tags[a] = p->comp_tags[min]; p->comp_tags[min] = t;
+            int d = p->comp_dests[a]; p->comp_dests[a] = p->comp_dests[min]; p->comp_dests[min] = d;
         }
     }
 
-    // Broadcast up to num_cdb results
-    for (int i = 0; i < count && i < p->num_cdb; i++)
-        broadcast(tags[i], dests[i]);
+    // Broadcast each completed instruction
+    for (int i = 0; i < p->comp_count && i < p->num_cdb; i++)
+        broadcast(p->comp_tags[i], p->comp_dests[i]);
+
+    p->comp_count = 0;
 }
 
-
-processor* init(processor_sim_args* psa)
-{
+// Initialization
+processor* init(processor_sim_args* psa) {
     int op;
 
     tr = psa->tr;
@@ -318,10 +338,8 @@ processor* init(processor_sim_args* psa)
     int num_long_alu = 1;
     int num_cdb = 1;
 
-    while ((op = getopt(psa->arg_count, psa->arg_list, "f:d:m:j:k:c:")) != -1)
-    {
-        switch (op)
-        {
+    while ((op = getopt(psa->arg_count, psa->arg_list, "f:d:m:j:k:c:")) != -1) {
+        switch (op) {
             case 'f': fetch_rate = atoi(optarg); break;
             case 'd': dispatch_mult = atoi(optarg); break;
             case 'm': schedule_mult = atoi(optarg); break;
@@ -337,11 +355,9 @@ processor* init(processor_sim_args* psa)
 
     self = calloc(1, sizeof(processor));
 
-    // Initialize processor state
+    // Allocate and initialize processor state
     p = calloc(1, sizeof(processor_t));
 
-
-    // Set configuration parameters
     p->fetch_rate = fetch_rate;
     p->dispatch_mult = dispatch_mult;
     p->schedule_mult = schedule_mult;
@@ -351,7 +367,7 @@ processor* init(processor_sim_args* psa)
     p->tag_counter = 1;
 
     // Initialize register status table
-    for (int i = 0; i < MAX_REGS; i++){
+    for (int i = 0; i < MAX_REGS; i++) {
         p->regs[i].ready = true;
         p->regs[i].tag = 0;
     }
@@ -371,7 +387,7 @@ processor* init(processor_sim_args* psa)
     p->cdbs = calloc(num_cdb, sizeof(cdb_t));
 
     self->si.tick = tick;
-    self->si.finish  = finish;
+    self->si.finish = finish;
     self->si.destroy = destroy;
     return self;
 }
@@ -380,13 +396,11 @@ const int64_t STALL_TIME = 100000;
 int64_t tickCount = 0;
 int64_t stallCount = -1;
 
-int64_t makeTag(int procNum, int64_t baseTag)
-{
+int64_t makeTag(int procNum, int64_t baseTag) {
     return ((int64_t)procNum) | (baseTag << 8);
 }
 
-void memOpCallback(int procNum, int64_t tag)
-{
+void memOpCallback(int procNum, int64_t tag) {
     int64_t baseTag = (tag >> 8);
     if (baseTag == memOpTag[procNum]) {
         memOpTag[procNum]++;
@@ -395,8 +409,8 @@ void memOpCallback(int procNum, int64_t tag)
     }
 }
 
-int tick(void)
-{
+// Updated tick (starter + Tomasulo)
+int tick(void) {
     // if room in pipeline, request op from trace
     //   for the sample processor, it requests an op
     //   each tick until it reaches a branch or memory op
@@ -409,83 +423,68 @@ int tick(void)
     cs->si.tick();
     tickCount++;
 
-    if (tickCount == stallCount)
-    {
-        printf(
-            "Processor may be stalled.  Now at tick - %ld, last op at %ld\n",
-            tickCount, tickCount - STALL_TIME);
-        for (int i = 0; i < processorCount; i++)
-        {
-            if (pendingMem[i] == 1)
-            {
+    if (tickCount == stallCount) {
+        printf("Processor may be stalled.  Now at tick - %ld, last op at %ld\n",
+               tickCount, tickCount - STALL_TIME);
+        for (int i = 0; i < processorCount; i++) {
+            if (pendingMem[i] == 1) {
                 printf("Processor %d is waiting on memory\n", i);
             }
         }
     }
 
     int progress = 0;
-    for (int i = 0; i < processorCount; i++)
-    {
-        if (pendingMem[i] == 1)
-        {
+    for (int i = 0; i < processorCount; i++) {
+        if (pendingMem[i] == 1) {
             progress = 1;
             continue;
         }
 
         // In the full processor simulator, the branch is pending until
-        //   it has executed.
-        if (pendingBranch[i] > 0)
-        {
+        // it has executed.
+        if (pendingBranch[i] > 0) {
             pendingBranch[i]--;
             progress = 1;
             continue;
         }
 
-        // TODO: get and manage ops for each processor core
+        // Get and manage ops for each processor core
         nextOp = tr->getNextOp(i);
-
         if (nextOp == NULL)
             continue;
 
         progress = 1;
 
-        switch (nextOp->op)
-        {
+        switch (nextOp->op) {
             case MEM_LOAD:
             case MEM_STORE:
                 pendingMem[i] = 1;
-                cs->memoryRequest(nextOp, i, makeTag(i, memOpTag[i]),
-                                  memOpCallback);
+                cs->memoryRequest(nextOp, i, makeTag(i, memOpTag[i]), memOpCallback);
                 break;
 
             case BRANCH:
-                pendingBranch[i]
-                    = (bs->branchRequest(nextOp, i) == nextOp->nextPCAddress)
-                          ? 0
-                          : 1;
+                pendingBranch[i] =
+                    (bs->branchRequest(nextOp, i) == nextOp->nextPCAddress) ? 0 : 1;
                 break;
 
             case ALU:
             case ALU_LONG:
-                // Dispatch ALU operations into the Tomasulo core
                 dq_push(&p->dq, nextOp);
-
-                // Run one cycle of the core
-                execute();
-                issue_ready();
-
                 break;
         }
 
         free(nextOp);
     }
 
+    stage_state_update();
+    stage_execute();
+    stage_schedule();
+    stage_dispatch();
+
     return progress;
 }
 
-
-int finish(int outFd)
-{
+int finish(int outFd) {
     int c = cs->si.finish(outFd);
     int b = bs->si.finish(outFd);
     char buf[32];
