@@ -26,6 +26,7 @@ int CADSS_VERBOSE = 0;
 int* pendingMem = NULL;
 int* pendingBranch = NULL;
 int64_t* memOpTag = NULL;
+int64_t tickCount = 0;
 
 typedef struct {
     bool ready; // True if the register holds a valid value
@@ -303,6 +304,7 @@ static void stage_execute(void) {
 
 // Update stage state: broadcast completed instructions on CDBs
 static void stage_state_update(void) {
+    tickCount += !(tickCount & 4);
     if (p->comp_count == 0) return;
 
     // Sort completed instructions by tag to broadcast in order
@@ -393,7 +395,6 @@ processor* init(processor_sim_args* psa) {
 }
 
 const int64_t STALL_TIME = 100000;
-int64_t tickCount = 0;
 int64_t stallCount = -1;
 
 int64_t makeTag(int procNum, int64_t baseTag) {
