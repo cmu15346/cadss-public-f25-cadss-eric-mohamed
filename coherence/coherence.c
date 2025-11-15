@@ -235,8 +235,8 @@ uint8_t invlReq(uint64_t addr, int processorNum)
             break;
         case MOESI:
             // For MOESI, both Modified and Owned states need to flush data
-            if (currentState == MODIFIED || currentState == OWNED
-                || currentState == OWNED_MODIFIED)
+            if (currentState == MODIFIED || currentState == COHER_OWNED
+                || currentState == COHER_OWNED_MODIFIED)
             {
                 inter_sim->busReq(DATA, addr, processorNum);
                 flush = 1;

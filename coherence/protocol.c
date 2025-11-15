@@ -108,14 +108,14 @@ static coherence_states cacheSharedProtocols(const scheme_features* feat,
             if (is_read)
             {
                 sendBusRd(addr, procNum);
-                return INVALID_SHARED;
+                return COHER_INVALID_SHARED;
             }
 
             sendBusWr(addr, procNum);
             return INVALID_MODIFIED;
 
-        case SHARED:
-        case FORWARD:
+        case COHER_SHARED:
+        case COHER_FORWARD:
             if (is_read)
             {
                 *permAvail = 1;
@@ -124,13 +124,13 @@ static coherence_states cacheSharedProtocols(const scheme_features* feat,
 
             *permAvail = 0;
             sendBusWr(addr, procNum);
-            return SHARED_MODIFIED;
+            return COHER_SHARED_MODIFIED;
 
-        case EXCLUSIVE:
+        case COHER_EXCLUSIVE:
             *permAvail = 1;
             if (is_read)
             {
-                return EXCLUSIVE;
+                return COHER_EXCLUSIVE;
             }
 
             return MODIFIED;
@@ -139,21 +139,21 @@ static coherence_states cacheSharedProtocols(const scheme_features* feat,
             *permAvail = 1;
             return MODIFIED;
 
-        case OWNED:
+        case COHER_OWNED:
             if (is_read)
             {
                 *permAvail = 1;
-                return OWNED;
+                return COHER_OWNED;
             }
 
             *permAvail = 0;
             sendBusWr(addr, procNum);
-            return OWNED_MODIFIED;
+            return COHER_OWNED_MODIFIED;
 
-        case INVALID_SHARED:
+        case COHER_INVALID_SHARED:
         case INVALID_MODIFIED:
-        case SHARED_MODIFIED:
-        case OWNED_MODIFIED:
+        case COHER_SHARED_MODIFIED:
+        case COHER_OWNED_MODIFIED:
             *permAvail = 0;
             return currentState;
 
@@ -178,18 +178,18 @@ static coherence_states resolvePendingRequest(const scheme_features* feat,
 
     switch (currentState)
     {
-        case INVALID_SHARED:
+        case COHER_INVALID_SHARED:
             *ca = DATA_RECV;
             if (reqType == DATA)
             {
-                return feat->hasExclusive ? EXCLUSIVE : SHARED;
+                return feat->hasExclusive ? COHER_EXCLUSIVE : COHER_SHARED;
             }
 
-            return feat->hasForward ? FORWARD : SHARED;
+            return feat->hasForward ? COHER_FORWARD : COHER_SHARED;
 
         case INVALID_MODIFIED:
-        case SHARED_MODIFIED:
-        case OWNED_MODIFIED:
+        case COHER_SHARED_MODIFIED:
+        case COHER_OWNED_MODIFIED:
             *ca = DATA_RECV;
             return MODIFIED;
 
@@ -221,11 +221,11 @@ static coherence_states snoopSharedProtocols(const scheme_features* feat,
         case INVALID:
             return INVALID;
 
-        case SHARED:
+        case COHER_SHARED:
             if (reqType == BUSRD)
             {
                 indicateShared(addr, procNum);
-                return SHARED;
+                return COHER_SHARED;
             }
 
             if (reqType == BUSWR)
@@ -236,12 +236,12 @@ static coherence_states snoopSharedProtocols(const scheme_features* feat,
 
             break;
 
-        case FORWARD:
+        case COHER_FORWARD:
             if (reqType == BUSRD)
             {
                 sendData(addr, procNum);
                 indicateShared(addr, procNum);
-                return SHARED;
+                return COHER_SHARED;
             }
 
             if (reqType == BUSWR)
@@ -252,12 +252,12 @@ static coherence_states snoopSharedProtocols(const scheme_features* feat,
 
             break;
 
-        case EXCLUSIVE:
+        case COHER_EXCLUSIVE:
             if (reqType == BUSRD)
             {
                 sendData(addr, procNum);
                 indicateShared(addr, procNum);
-                return SHARED;
+                return COHER_SHARED;
             }
 
             if (reqType == BUSWR)
@@ -276,9 +276,9 @@ static coherence_states snoopSharedProtocols(const scheme_features* feat,
                 indicateShared(addr, procNum);
                 if (feat->hasOwned)
                 {
-                    return OWNED;
+                    return COHER_OWNED;
                 }
-                return SHARED;
+                return COHER_SHARED;
             }
 
             if (reqType == BUSWR)
@@ -290,12 +290,12 @@ static coherence_states snoopSharedProtocols(const scheme_features* feat,
 
             break;
 
-        case OWNED:
+        case COHER_OWNED:
             if (reqType == BUSRD)
             {
                 sendData(addr, procNum);
                 indicateShared(addr, procNum);
-                return OWNED;
+                return COHER_OWNED;
             }
 
             if (reqType == BUSWR)
@@ -307,10 +307,10 @@ static coherence_states snoopSharedProtocols(const scheme_features* feat,
 
             break;
 
-        case INVALID_SHARED:
+        case COHER_INVALID_SHARED:
         case INVALID_MODIFIED:
-        case SHARED_MODIFIED:
-        case OWNED_MODIFIED:
+        case COHER_SHARED_MODIFIED:
+        case COHER_OWNED_MODIFIED:
             return currentState;
 
         default:

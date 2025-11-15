@@ -12,13 +12,13 @@ typedef enum _coherence_states
     MODIFIED,
     INVALID,
     INVALID_MODIFIED,
-    SHARED, // Clean shared state
-    INVALID_SHARED, // Transient waiting for BusRd to complete
-    SHARED_MODIFIED, // Transient waiting for BusRdX to complete
-    EXCLUSIVE, // Clean exclusive ownership
-    OWNED, // Clean shared ownership (dirty in another cache)
-    OWNED_MODIFIED, // Transient waiting for BusRdX to complete
-    FORWARD // MESIF's single-forwarder state
+    COHER_SHARED, // Clean shared state
+    COHER_INVALID_SHARED, // Transient waiting for BusRd to complete
+    COHER_SHARED_MODIFIED, // Transient waiting for BusRdX to complete
+    COHER_EXCLUSIVE, // Clean exclusive ownership
+    COHER_OWNED, // Clean shared ownership (dirty in another cache)
+    COHER_OWNED_MODIFIED, // Transient waiting for BusRdX to complete
+    COHER_FORWARD // MESIF's single-forwarder state
 } coherence_states;
 
 typedef enum _coherence_scheme
