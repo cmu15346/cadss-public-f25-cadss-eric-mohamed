@@ -92,8 +92,8 @@ uint8_t busReq(bus_req_type reqType, uint64_t addr, int processorNum)
     }
 
     coherence_states currentState = getState(addr, processorNum);
-    coherence_states nextState;
-    cache_action ca;
+    coherence_states nextState = currentState;
+    cache_action ca = NO_ACTION;
 
     switch (cs)
     {
@@ -102,16 +102,20 @@ uint8_t busReq(bus_req_type reqType, uint64_t addr, int processorNum)
                 = snoopMI(reqType, &ca, currentState, addr, processorNum);
             break;
         case MSI:
-            // TODO: Implement this.
+            nextState
+                = snoopMSI(reqType, &ca, currentState, addr, processorNum);
             break;
         case MESI:
-            // TODO: Implement this.
+            nextState
+                = snoopMESI(reqType, &ca, currentState, addr, processorNum);
             break;
         case MOESI:
-            // TODO: Implement this.
+            nextState
+                = snoopMOESI(reqType, &ca, currentState, addr, processorNum);
             break;
         case MESIF:
-            // TODO: Implement this.
+            nextState
+                = snoopMESIF(reqType, &ca, currentState, addr, processorNum);
             break;
         default:
             fprintf(stderr, "Undefined coherence scheme - %d\n", cs);
@@ -155,9 +159,11 @@ uint8_t permReq(uint8_t is_read, uint64_t addr, int processorNum)
     }
 
     coherence_states currentState = getState(addr, processorNum);
-    coherence_states nextState;
+    coherence_states nextState = currentState;
     uint8_t permAvail = 0;
 
+    // Dispatch to the scheme-specific cache-side handler.  Each routine returns
+    // both the new coherence state and whether the cache had permission.
     switch (cs)
     {
         case MI:
@@ -166,19 +172,23 @@ uint8_t permReq(uint8_t is_read, uint64_t addr, int processorNum)
             break;
 
         case MSI:
-            // TODO: Implement this.
+            nextState = cacheMSI(is_read, &permAvail, currentState, addr,
+                                 processorNum);
             break;
 
         case MESI:
-            // TODO: Implement this.
+            nextState = cacheMESI(is_read, &permAvail, currentState, addr,
+                                  processorNum);
             break;
 
         case MOESI:
-            // TODO: Implement this.
+            nextState = cacheMOESI(is_read, &permAvail, currentState, addr,
+                                   processorNum);
             break;
 
         case MESIF:
-            // TODO: Implement this.
+            nextState = cacheMESIF(is_read, &permAvail, currentState, addr,
+                                   processorNum);
             break;
 
         default:
@@ -192,8 +202,7 @@ uint8_t permReq(uint8_t is_read, uint64_t addr, int processorNum)
 
 uint8_t invlReq(uint64_t addr, int processorNum)
 {
-    coherence_states currentState, nextState = INVALID;
-    cache_action ca;
+    coherence_states currentState;
     uint8_t flush;
 
     if (processorNum < 0 || processorNum >= processorCount)
@@ -208,27 +217,30 @@ uint8_t invlReq(uint64_t addr, int processorNum)
     switch (cs)
     {
         case MI:
-            nextState = INVALID;
             if (currentState != INVALID)
             {
                 inter_sim->busReq(DATA, addr, processorNum);
                 flush = 1;
             }
             break;
-
         case MSI:
-            // TODO: Implement this.
-            break;
         case MESI:
-            // TODO: Implement this.
-            break;
-
-        case MOESI:
-            // TODO: Implement this.
-            break;
-
         case MESIF:
-            // TODO: Implement this.
+            // For MSI, MESI, and MESIF, only Modified state needs to flush data
+            if (currentState == MODIFIED)
+            {
+                inter_sim->busReq(DATA, addr, processorNum);
+                flush = 1;
+            }
+            break;
+        case MOESI:
+            // For MOESI, both Modified and Owned states need to flush data
+            if (currentState == MODIFIED || currentState == OWNED
+                || currentState == OWNED_MODIFIED)
+            {
+                inter_sim->busReq(DATA, addr, processorNum);
+                flush = 1;
+            }
             break;
 
         default:
