@@ -1,0 +1,25 @@
+Protocol summary (mean ticks):
+                          mean           std      min       max  count
+coherence_scheme                                                      
+MOESI             8.812553e+06  9.044063e+06  1543775  24204885      8
+MESIF             8.854372e+06  9.105729e+06  1543775  24250943      8
+MESI              8.854649e+06  9.105935e+06  1543775  24251875      8
+MSI               9.115947e+06  9.338068e+06  1613331  24277732      8
+MI                1.029560e+07  8.599129e+06  1800871  24202835      8
+
+Best protocol per trace:
+               best_protocol  best_ticks  worst_ticks  range_pct
+trace                                                           
+blackscholes_4         MESIF   1658926.0    7697380.5  78.448175
+dedup_4                   MI  13001853.0   13040254.0   0.294480
+dedup_8                   MI   6988965.5    7023559.5   0.492542
+x264_8                    MI  13494202.5   14648837.0   7.882090
+
+Scaling (mean ticks by processor count):
+processor_count            2            4
+coherence_scheme                         
+MESI              3127734.50  14581564.00
+MESIF             3127734.50  14581009.75
+MI                3217415.25  17373785.50
+MOESI             3127498.50  14497607.25
+MSI               3254345.50  14977548.25
