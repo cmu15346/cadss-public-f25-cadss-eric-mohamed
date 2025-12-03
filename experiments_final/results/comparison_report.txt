@@ -1,0 +1,74 @@
+======================================================================
+PERCEPTRON VS CLASSIC BRANCH PREDICTOR COMPARISON REPORT
+======================================================================
+
+EXPERIMENT OVERVIEW
+----------------------------------------------------------------------
+Total configurations tested: 612
+Traces tested: black-test, cadss, fluid-test, ls
+Predictor types: 2-bit, Perceptron-Std, GShare, GSelect, Perceptron-GShare, Perceptron-GSelect
+
+MATCHED PAIR RESULTS
+----------------------------------------------------------------------
+Total matched pairs: 156
+Perceptron wins: 104 (66.7%)
+Average accuracy improvement: 1.05%
+
+Best Improvements by Trace:
+
+  black-test:
+    GShare → Perceptron-Std
+    Improvement: 8.03%
+    Classic: 74.91% accuracy
+    Perceptron: 82.94% accuracy
+
+  cadss:
+    GShare → Perceptron-Std
+    Improvement: 10.74%
+    Classic: 47.48% accuracy
+    Perceptron: 58.22% accuracy
+
+  fluid-test:
+    GShare → Perceptron-Std
+    Improvement: 2.87%
+    Classic: 89.12% accuracy
+    Perceptron: 91.98% accuracy
+
+  ls:
+    GShare → Perceptron-Std
+    Improvement: 7.35%
+    Classic: 46.40% accuracy
+    Perceptron: 53.75% accuracy
+
+======================================================================
+BEST OVERALL CONFIGURATIONS
+======================================================================
+
+black-test:
+  Predictor: Perceptron-Std
+  Parameters: s=7, b=24, g=0
+  Accuracy: 82.94%
+  Misprediction Rate: 17.06%
+  Storage: 33816 bits
+
+cadss:
+  Predictor: Perceptron-Std
+  Parameters: s=7, b=20, g=0
+  Accuracy: 79.51%
+  Misprediction Rate: 20.49%
+  Storage: 29716 bits
+
+fluid-test:
+  Predictor: GSelect
+  Parameters: s=9, b=4, g=2
+  Accuracy: 94.14%
+  Misprediction Rate: 5.86%
+  Storage: 33796 bits
+
+ls:
+  Predictor: 2-bit
+  Parameters: s=9, b=0, g=0
+  Accuracy: 85.54%
+  Misprediction Rate: 14.46%
+  Storage: 33792 bits
+

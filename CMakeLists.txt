@@ -22,5 +22,6 @@ add_subdirectory(coherence)
 add_subdirectory(interconnect)
 add_subdirectory(simpleCache)
 add_subdirectory(memory)
+add_subdirectory(final-project)
 
 project(cadss C)
