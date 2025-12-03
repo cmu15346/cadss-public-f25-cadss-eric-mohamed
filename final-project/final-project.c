@@ -5,23 +5,28 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <stdio.h>
+#include <math.h>
 
 typedef struct branch_def {
     // Simulation parameters
     uint64_t p; // number of processors
-    uint64_t s; // predictor size
-    uint64_t b; // BHR size
-    uint64_t g; // predictor model
+    uint64_t s; // predictor size 
+    uint64_t b; // BHR size 
+    uint64_t g; // predictor model 
 
-    // Predictor state
-    uint8_t* counters;    // 2-bit saturating counters
+    // Perceptron state
+    int* weights;         // Table of weights (flattened 2D array)
     uint64_t* btb;        // Branch Target Buffer
     uint64_t bhr;         // Global Branch History Register
     
     // Derived values
-    uint64_t predictor_size;  // 1 << s
-    uint64_t index_mask;      // (1 << s) - 1
-    uint64_t bhr_mask;        // (1 << b) - 1
+    uint64_t num_perceptrons;   // 1 << s
+    uint64_t index_mask;        // (1 << s) - 1
+    uint64_t bhr_mask;          // (1 << b) - 1
+    
+    // Perceptron specific values
+    int threshold;              // Training threshold (theta)
+    int weights_per_row;        // b + 1 (history + bias)
 
     // Statistics
     uint64_t stat_total_branches;
@@ -38,11 +43,6 @@ int tick();
 int finish(int outFd);
 int destroy(void);
 
-/* Checks if the argument passed to the option opt is an integer argument 
-   ARGS: 
-      opt: the option the argument was passed to
-      string: the argument
-   RETURNS: atoi(string) if string is a valid integer */
 uint64_t atoi_safe(int opt, char *string){
     int result = atoi(string);
     if (result == 0 && string[0] != '0'){
@@ -55,25 +55,24 @@ uint64_t atoi_safe(int opt, char *string){
 // Get predictor index based on PC and model type
 uint64_t get_predictor_index(uint64_t pc, uint64_t bhr, uint64_t model, uint64_t s, uint64_t b) {
     uint64_t index_mask = (1ULL << s) - 1; // mask for s bits
-    uint64_t pc_index = (pc >> 3) & index_mask;  // ignore lower 3 bits (word aligned)
+    uint64_t pc_index = (pc >> 2) & index_mask; // Shift by 2 (instruction aligned)
     
     switch(model) {
-        case 0: // 2-bit counters
-            return pc_index;
-        case 1: // GSHARE: XOR with BHR
+        case 0: // Standard Perceptron (PC only)
+            return pc_index;            
+        case 1: // Gshare-style Indexing (PC XOR BHR)
             return (pc_index ^ bhr) & index_mask;
-        case 2: // GSELECT: concatenate PC bits with BHR
-            if (b >= s) return pc_index; // Fallback if b >= s, this shouldn't happen
-            else
-            {
+        case 2: // Gselect-style Indexing (Concat PC and BHR)
+            // Uses 'b' bits of BHR and 's-b' bits of PC
+            if (b >= s) return pc_index; 
+            else {
                 uint64_t pc_bits = (s - b);
                 uint64_t pc_mask = (1ULL << pc_bits) - 1;
+                // Combine: Top bits from BHR, Bottom bits from PC
                 return ((pc_index & pc_mask) | ((bhr & ((1ULL << b) - 1)) << pc_bits)) & index_mask;
             }
-        // case 3: // Yeh-Patt (not implemented)
-        //     raise (SIGABRT);
-        //     exit(-1);
-        default: // Default to 2-bit counters
+            
+        default: // Default to Standard
             return pc_index;
     }
 }
@@ -86,21 +85,21 @@ void init_branchSim(uint64_t p, uint64_t s, uint64_t b, uint64_t g)
     branchSim->b = b;
     branchSim->g = g;
     
-    // Calculate derived values
-    branchSim->predictor_size = 1ULL << s;
-    branchSim->index_mask = branchSim->predictor_size - 1;
+    // Derived values
+    branchSim->num_perceptrons = 1ULL << s;
+    branchSim->index_mask = branchSim->num_perceptrons - 1;
     branchSim->bhr_mask = b > 0 ? (1ULL << b) - 1 : 0;
     branchSim->bhr = 0;
     
-    // Allocate predictor tables
-    branchSim->counters = calloc(branchSim->predictor_size, sizeof(uint8_t));
-    branchSim->btb = calloc(branchSim->predictor_size, sizeof(uint64_t));
+    // Perceptron Parameters
+    // Formula from paper: theta = floor(1.93 * h + 14)
+    branchSim->threshold = (int)(1.93 * b + 14);
+    branchSim->weights_per_row = b + 1;
     
-    // Initialize all counters to 01 (weakly not taken)
-    for (uint64_t i = 0; i < branchSim->predictor_size; i++) {
-        branchSim->counters[i] = 1; // 01 state
-    }
-
+    // Allocate tables
+    branchSim->weights = calloc(branchSim->num_perceptrons * branchSim->weights_per_row, sizeof(int));
+    branchSim->btb = calloc(branchSim->num_perceptrons, sizeof(uint64_t));
+    
     // Initialize stats
     branchSim->stat_total_branches = 0;
     branchSim->stat_correct_predictions = 0;
@@ -112,29 +111,14 @@ branch* init(branch_sim_args* csa)
     int op;
     uint64_t p = 0, s = 0, b = 0, g = 0;
 
-    // TODO - get argument list from assignment
     while ((op = getopt(csa->arg_count, csa->arg_list, "p:s:b:g:")) != -1)
     {
         switch (op)
         {
-            // Processor count
-            case 'p':
-                p = atoi_safe(op, optarg);
-                break;
-
-                // predictor size
-            case 's':
-                s = atoi_safe(op, optarg);
-                break;
-
-                // BHR size
-            case 'b':
-                b = atoi_safe(op, optarg);
-                break;
-                // predictor model
-            case 'g':
-                g = atoi_safe(op, optarg);
-                break;
+            case 'p': p = atoi_safe(op, optarg); break;
+            case 's': s = atoi_safe(op, optarg); break;
+            case 'b': b = atoi_safe(op, optarg); break;
+            case 'g': g = atoi_safe(op, optarg); break;
         }
     }
 
@@ -148,75 +132,75 @@ branch* init(branch_sim_args* csa)
     return self;
 }
 
-// Given a branch operation, return the predicted PC address
 uint64_t branchRequest(trace_op* op, int processorNum)
 {
     assert(op != NULL);
     assert(branchSim != NULL);
 
     uint64_t pcAddress = op->pcAddress;
-    uint64_t predAddress = op->nextPCAddress; // 100% accuracy
+    uint64_t nextPC = op->nextPCAddress; 
 
-    // In student's simulator, either return a predicted address from BTB
-    //   or pcAddress + 4 as a simplified "not taken".
-    // Predictor has the actual nextPCAddress, so it knows how to update
-    //   its state after computing the prediction.
-    
-    // Get predictor index based on model
+    // Get Perceptron Index based on model
     uint64_t index = get_predictor_index(pcAddress, branchSim->bhr, branchSim->g, 
                                         branchSim->s, branchSim->b);
     
-    // Make prediction based on counter value
-    uint8_t counter = branchSim->counters[index];
-    uint64_t predictedPC;
-    int predicted_taken;
+    int* w = &branchSim->weights[index * branchSim->weights_per_row];
+
+    // Compute y = w0 + w1*x1 + w2*x2 + ... + wb*xb
+    int y = w[0]; // Bias
+    for (int i = 1; i <= branchSim->b; i++) {
+        int history_bit = (branchSim->bhr >> (i - 1)) & 1;
+        if (history_bit) y += w[i];
+        else             y -= w[i];
+    }
+
+    // Make Prediction
+    int predicted_taken = (y >= 0) ? 1 : 0;
     
-    if (counter >= 2) { // 10 or 11 - predict taken
-        predicted_taken = 1;
+    // If predicted taken, get target from BTB
+    uint64_t predictedPC;
+    if (predicted_taken) {
         predictedPC = branchSim->btb[index];
         // If BTB entry is 0 or invalid, predict PC + 4
         if (predictedPC == 0) {
-            predictedPC = pcAddress + 4;
-            predicted_taken = 0;
+             predictedPC = pcAddress + 4; 
+             predicted_taken = 0; 
         }
-    } else { // 00 or 01 - predict not taken
-        predicted_taken = 0;
+    } else { // Predict not taken
         predictedPC = pcAddress + 4;
     }
-    
-    // --- UPDATE STATS ---
+
+    // Update Statistics
     branchSim->stat_total_branches++;
-    if (predictedPC == predAddress) {
+    if (predictedPC == nextPC) {
         branchSim->stat_correct_predictions++;
     } else {
         branchSim->stat_mispredictions++;
     }
 
-    // Determine if branch was actually taken
-    int actual_taken = (predAddress != pcAddress + 4) ? 1 : 0;
-    
-    // Update predictor state
-    // Update counter
-    if (actual_taken) {
-        if (branchSim->counters[index] < 3) {
-            branchSim->counters[index]++;
-        }
-    } else {
-        if (branchSim->counters[index] > 0) {
-            branchSim->counters[index]--;
+    // Update Weights
+    int actual_taken = (nextPC != pcAddress + 4) ? 1 : 0;
+    int t = actual_taken ? 1 : -1; 
+
+    if ((predicted_taken != actual_taken) || (abs(y) <= branchSim->threshold)) {
+        w[0] += t;
+        for (int i = 1; i <= branchSim->b; i++) {
+            int history_bit = (branchSim->bhr >> (i - 1)) & 1;
+            int x = history_bit ? 1 : -1;
+            w[i] += t * x;
         }
     }
-    
+
     // Update BTB if branch was taken
     if (actual_taken) {
-        branchSim->btb[index] = predAddress;
+        branchSim->btb[index] = nextPC;
     }
-    
+
     // Update BHR (shift left and add new outcome)
     if (branchSim->b > 0) {
         branchSim->bhr = ((branchSim->bhr << 1) | actual_taken) & branchSim->bhr_mask;
     }
-    
+
     return predictedPC;
 }
 
@@ -235,7 +219,7 @@ int finish(int outFd)
         double miss_rate = (total > 0) ? (double)miss / total * 100.0 : 0.0;
 
         dprintf(outFd, "-----------------------------------------------------\n");
-        dprintf(outFd, "              BRANCH PREDICTOR STATISTICS            \n");
+        dprintf(outFd, "              PERCEPTRON PREDICTOR STATS             \n");
         dprintf(outFd, "-----------------------------------------------------\n");
         dprintf(outFd, "Config: s=%lu, b=%lu, g=%lu\n", branchSim->s, branchSim->b, branchSim->g);
         dprintf(outFd, "Total Branches      : %lu\n", total);
@@ -250,22 +234,15 @@ int finish(int outFd)
 
 int destroy(void)
 {
-    // free any internally allocated memory here
     if (branchSim != NULL) {
-        if (branchSim->counters != NULL) {
-            free(branchSim->counters);
-        }
-        if (branchSim->btb != NULL) {
-            free(branchSim->btb);
-        }
+        if (branchSim->weights != NULL) free(branchSim->weights);
+        if (branchSim->btb != NULL) free(branchSim->btb);
         free(branchSim);
         branchSim = NULL;
     }
-    
     if (self != NULL) {
         free(self);
         self = NULL;
     }
-    
     return 0;
 }
